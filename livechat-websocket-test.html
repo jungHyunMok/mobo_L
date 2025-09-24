@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>라이브채팅 WebSocket 테스트</title>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .container {
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .messages {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 10px;
+            background-color: #f9f9f9;
+        }
+        .message {
+            margin-bottom: 10px;
+            padding: 5px;
+            border-radius: 4px;
+        }
+        .message.sent {
+            background-color: #e3f2fd;
+            text-align: right;
+        }
+        .message.received {
+            background-color: #f1f8e9;
+        }
+        .message.system {
+            background-color: #fff3e0;
+            font-style: italic;
+        }
+        input, button {
+            padding: 8px;
+            margin: 5px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .status.connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .status.disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <h1>라이브채팅 WebSocket 테스트</h1>
+    
+    <div class="container">
+        <h3>연결 설정</h3>
+        <div>
+            <label>서버 URL:</label>
+            <input type="text" id="serverUrl" value="http://localhost:18080" style="width: 300px;">
+        </div>
+        <div>
+            <label>Access Token:</label>
+            <input type="text" id="accessToken" placeholder="토큰을 입력하세요" style="width: 300px;" value="test_token_12345">
+        </div>
+        <div>
+            <button id="connectBtn" onclick="connect()">연결</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>연결 해제</button>
+        </div>
+        <div id="status" class="status disconnected">연결되지 않음</div>
+    </div>
+
+    <div class="container">
+        <h3>채팅방 설정</h3>
+        <div>
+            <label>채팅방 ID:</label>
+            <input type="text" id="roomId" value="room1" style="width: 200px;">
+            <button onclick="joinRoom()">채팅방 참여</button>
+            <button onclick="leaveRoom()">채팅방 나가기</button>
+        </div>
+        <div>
+            <label>사용자 ID:</label>
+            <input type="text" id="userId" value="user1" style="width: 200px;">
+        </div>
+    </div>
+
+    <div class="container">
+        <h3>메시지</h3>
+        <div id="messages" class="messages"></div>
+        <div>
+            <input type="text" id="messageInput" placeholder="메시지를 입력하세요" style="width: 400px;" disabled>
+            <button id="sendBtn" onclick="sendMessage()" disabled>전송</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <h3>토큰 발급 테스트</h3>
+        <div>
+            <label>Assertion Token:</label>
+            <input type="text" id="assertionToken" placeholder="HMM assertion 토큰" style="width: 300px;">
+        </div>
+        <div>
+            <label>User ID:</label>
+            <input type="text" id="tokenUserId" value="testuser" style="width: 200px;">
+        </div>
+        <div>
+            <button onclick="getToken()">토큰 발급</button>
+        </div>
+    </div>
+
+    <script>
+        let stompClient = null;
+        let isConnected = false;
+        let currentRoomId = null;
+
+        function connect() {
+            const serverUrl = document.getElementById('serverUrl').value;
+            const accessToken = document.getElementById('accessToken').value;
+            
+            if (!accessToken) {
+                alert('Access Token을 입력해주세요.');
+                return;
+            }
+
+            try {
+                // URL 정규화
+                let wsUrl;
+                if (serverUrl.startsWith('http://')) {
+                    wsUrl = serverUrl.replace('http://', 'ws://') + '/ws?access_token=' + accessToken;
+                } else if (serverUrl.startsWith('https://')) {
+                    wsUrl = serverUrl.replace('https://', 'wss://') + '/ws?access_token=' + accessToken;
+                } else {
+                    wsUrl = 'ws://' + serverUrl + '/ws?access_token=' + accessToken;
+                }
+
+                console.log('WebSocket 연결 시도: ' + wsUrl);
+
+                // 순수 WebSocket 사용 (SockJS 제거)
+                const socket = new WebSocket(wsUrl);
+                
+                // WebSocket 연결 상태 확인
+                socket.onopen = function(event) {
+                    console.log('WebSocket 연결 성공');
+                    stompClient = Stomp.over(socket);
+                    
+                    stompClient.connect(
+                        {},
+                        function(frame) {
+                            console.log('STOMP 연결 성공: ' + frame);
+                            isConnected = true;
+                            updateStatus('연결됨', true);
+                            updateButtons();
+                        },
+                        function(error) {
+                            console.error('STOMP 연결 실패: ' + error);
+                            updateStatus('STOMP 연결 실패: ' + error, false);
+                        }
+                    );
+                };
+
+                socket.onerror = function(error) {
+                    console.error('WebSocket 연결 오류: ' + error);
+                    updateStatus('WebSocket 연결 오류: ' + error, false);
+                };
+
+                socket.onclose = function(event) {
+                    console.log('WebSocket 연결 종료: ' + event.code + ' - ' + event.reason);
+                    if (isConnected) {
+                        isConnected = false;
+                        updateStatus('연결 종료됨', false);
+                        updateButtons();
+                    }
+                };
+
+            } catch (error) {
+                console.error('연결 시도 중 오류: ' + error);
+                updateStatus('연결 시도 오류: ' + error.message, false);
+            }
+        }
+
+        function disconnect() {
+            if (stompClient !== null) {
+                stompClient.disconnect();
+            }
+            isConnected = false;
+            updateStatus('연결 해제됨', false);
+            updateButtons();
+        }
+
+        function joinRoom() {
+            if (!isConnected) {
+                alert('먼저 WebSocket에 연결해주세요.');
+                return;
+            }
+
+            const roomId = document.getElementById('roomId').value;
+            currentRoomId = roomId;
+
+            // 채팅방 구독
+            stompClient.subscribe('/topic/livechat/rooms/' + roomId, function(message) {
+                const chatMessage = JSON.parse(message.body);
+                displayMessage(chatMessage, 'received');
+            });
+
+            // 구독 요청 전송
+            stompClient.send('/app/livechat/rooms/' + roomId + '/subscribe', {}, JSON.stringify({
+                roomId: roomId
+            }));
+
+            addSystemMessage('채팅방 ' + roomId + '에 참여했습니다.');
+        }
+
+        function leaveRoom() {
+            if (currentRoomId) {
+                addSystemMessage('채팅방 ' + currentRoomId + '에서 나갔습니다.');
+                currentRoomId = null;
+            }
+        }
+
+        function sendMessage() {
+            if (!isConnected || !currentRoomId) {
+                alert('먼저 연결하고 채팅방에 참여해주세요.');
+                return;
+            }
+
+            const messageInput = document.getElementById('messageInput');
+            const content = messageInput.value.trim();
+            const userId = document.getElementById('userId').value;
+
+            if (!content) {
+                return;
+            }
+
+            const message = {
+                roomId: currentRoomId,
+                sender: userId,
+                content: content,
+                timestamp: new Date().toISOString()
+            };
+
+            // 메시지 전송
+            stompClient.send('/app/livechat/rooms/' + currentRoomId + '/send', {}, JSON.stringify(message));
+            
+            // 로컬에 메시지 표시
+            displayMessage(message, 'sent');
+            messageInput.value = '';
+        }
+
+        function getToken() {
+            const assertionToken = document.getElementById('assertionToken').value;
+            const userId = document.getElementById('tokenUserId').value;
+            const serverUrl = document.getElementById('serverUrl').value;
+
+            if (!assertionToken) {
+                alert('Assertion Token을 입력해주세요.');
+                return;
+            }
+
+            fetch(serverUrl + '/api/livechat/auth/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    assertionToken: assertionToken,
+                    userId: userId
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    document.getElementById('accessToken').value = data.data.liveChatToken;
+                    addSystemMessage('토큰 발급 성공: ' + data.data.liveChatToken);
+                } else {
+                    addSystemMessage('토큰 발급 실패: ' + data.message);
+                }
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                addSystemMessage('토큰 발급 오류: ' + error.message);
+            });
+        }
+
+        function displayMessage(message, type) {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message ' + type;
+            
+            const timestamp = new Date(message.timestamp).toLocaleTimeString();
+            messageDiv.innerHTML = `
+                <strong>${message.sender}</strong> (${timestamp}): ${message.content}
+            `;
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function addSystemMessage(text) {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message system';
+            messageDiv.textContent = text;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function updateStatus(text, connected) {
+            const statusDiv = document.getElementById('status');
+            statusDiv.textContent = text;
+            statusDiv.className = 'status ' + (connected ? 'connected' : 'disconnected');
+        }
+
+        function updateButtons() {
+            document.getElementById('connectBtn').disabled = isConnected;
+            document.getElementById('disconnectBtn').disabled = !isConnected;
+            document.getElementById('messageInput').disabled = !isConnected;
+            document.getElementById('sendBtn').disabled = !isConnected;
+        }
+
+        // Enter 키로 메시지 전송
+        document.getElementById('messageInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // 초기 상태 설정
+        updateButtons();
+
+        // 디버깅을 위한 전역 에러 핸들러
+        window.addEventListener('error', function(e) {
+            console.error('전역 에러:', e.error);
+            updateStatus('전역 에러: ' + e.error.message, false);
+        });
+
+        // WebSocket 지원 확인
+        if (!window.WebSocket) {
+            console.error('이 브라우저는 WebSocket을 지원하지 않습니다.');
+            updateStatus('WebSocket을 지원하지 않는 브라우저입니다.', false);
+        } else {
+            console.log('WebSocket 지원됨');
+        }
+    </script>
+</body>
+</html>
